@@ -1,0 +1,9 @@
+{:paths ["src"]
+
+ :deps {org.clojure/clojure {:mvn/version "1.11.1"}
+        instaparse/instaparse {:mvn/version "1.4.12"}
+        org.clojure/core.match {:mvn/version "1.0.1"}}
+
+ :aliases
+ {:run {:main-opts ["-m" "lambda-mu.repl"]}}}
+
