@@ -1,7 +1,83 @@
 (ns lambda-mu.interpreter
   (:require [clojure.core.match :refer [match]]
+            [clojure.set :as set]
             [lambda-mu.parser :refer [parse]]))
 
+(defn free-vars [expr]
+  (match expr
+    {:type :var :name x} #{x}
+    {:type :lam :param {:type :var :name x} :body b} (disj (free-vars b) x)
+    {:type :mu :alpha {:type :var :name a} :expr e} (disj (free-vars e) a)
+    {:type :freeze :alpha {:type :var :name a} :expr e} (disj (free-vars e) a)
+    {:type :app :fun f :arg a} (set/union (free-vars f) (free-vars a))
+    :else #{}))
+
+(defn gensym-var [x]
+  {:type :var :name (gensym (str (:name x) "-"))})
+
+(defn rename [from to]
+  (fn walk [e]
+    (match e
+      {:type :var :name x} (if (= x (:name from)) to e)
+      {:type :lam :param x :body b}
+      (let [x' (if (= x from) to x)]
+        {:type :lam :param x' :body (walk b)})
+
+      {:type :app :fun f :arg a}
+      {:type :app :fun (walk f) :arg (walk a)}
+
+      {:type :freeze :alpha a :expr t}
+      (let [a' (if (= a from) to a)]
+        {:type :freeze :alpha a' :expr (walk t)})
+
+      {:type :mu :alpha a :expr u}
+      (let [a' (if (= a from) to a)]
+        {:type :mu :alpha a' :expr (walk u)})
+
+      :else e)))
+
+(defn subst [x v]
+  (fn walk [e]
+    (match e
+      {:type :var :name y} (if (= e x) v e)
+
+      {:type :lam :param a :body b}
+      (if (= a x)
+        e
+        (let [fv-v (free-vars v)
+              a-name (:name a)]
+          (if (contains? fv-v a-name)
+            (let [fresh (gensym-var a)
+                  renamed-b ((rename a fresh) b)]
+              {:type :lam :param fresh :body (walk renamed-b)})
+            {:type :lam :param a :body (walk b)})))
+
+      {:type :mu :alpha a :expr b}
+      (if (= a x)
+        e
+        (let [fv-v (free-vars v)
+              a-name (:name a)]
+          (if (contains? fv-v a-name)
+            (let [fresh (gensym-var a)
+                  renamed-b ((rename a fresh) b)]
+              {:type :mu :alpha fresh :expr (walk renamed-b)})
+            {:type :mu :alpha a :expr (walk b)})))
+
+      {:type :freeze :alpha a :expr b}
+      (if (= a x)
+        e
+        (let [fv-v (free-vars v)
+              a-name (:name a)]
+          (if (contains? fv-v a-name)
+            (let [fresh (gensym-var a)
+                  renamed-b ((rename a fresh) b)]
+              {:type :freeze :alpha fresh :expr (walk renamed-b)})
+            {:type :freeze :alpha a :expr (walk b)})))
+
+      {:type :app :fun f :arg a}
+      {:type :app :fun (walk f) :arg (walk a)}
+
+      :else e)))
 
 (defn resolve-vars [env expr]
   (match expr
@@ -22,45 +98,6 @@
 
     :else expr))
 
-(defn subst [x v]
-  (fn [e]
-    (match e
-      {:type :var :name y}
-      (if (= e x) v e)
-      
-      {:type :lam :param a :body b}
-      (if (= a x)
-        e
-        {:type :lam :param a :body ((subst x v) b)})
-      
-      {:type :app :fun f :arg a}
-      {:type :app :fun ((subst x v) f) :arg ((subst x v) a)}
-      
-      {:type :freeze :alpha a :expr t}
-      {:type :freeze :alpha a :expr ((subst x v) t)}
-      
-      {:type :mu :alpha a :expr u}
-      {:type :mu :alpha a :expr ((subst x v) u)})))
-
-
-(defn rename [from to]
-  (fn [e]
-    (match e
-      {:type :lam :param x :body b}
-      {:type :lam :param x :body ((rename from to) b)}
-      
-      {:type :app :fun f :arg a}
-      {:type :app :fun ((rename from to) f) :arg ((rename from to) a)}
-      
-      {:type :freeze :alpha a :expr t}
-      {:type :freeze :alpha (if (= a from) to a) :expr ((rename from to) t)}
-      
-      {:type :mu :alpha a :expr u}
-      (if (= a from)
-        e
-        {:type :mu :alpha a :expr ((rename from to) u)})
-      
-      {:type :var :name _} e)))
 
 (defn apply-named [beta v]
   (fn [e]
