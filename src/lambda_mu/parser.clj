@@ -1,46 +1,39 @@
-(ns lambda-mu.parser (:require [instaparse.core :as insta]
-                               [clojure.core.match :refer [match]]))
+(ns lambda_mu.parser
+  (:require [instaparse.core :as insta]
+            [lambda_mu.expr :refer [->Var ->Lam ->App ->Freeze ->Mu]]
+            [clojure.test :refer :all]))
 
 (def parser
   (insta/parser
-   "top    = let | expr
-    let    = <'let'> <ws+> var <ws+> <'='> <ws+> expr
-    expr   = app
-    app    = app <ws*> term | term
-    term   = freeze | lam | mu | var | <'('> expr <')'>
-    lam    = <'λ'> var <ws+> expr
-    mu     = <'μ'> var <ws+> expr
-    freeze = <'['> var <']'> <ws*> expr
-    var    = #'[a-zA-Z0-9_]+'
-    ws     = #'[ \\s\\.]'"))
+   "expr    = app
+    app     = term term*
+    term    = lam | mu | freeze | var | parens
+    lam     = <('\\\\' | 'λ')> identifier <'.'> expr
+    mu      = <('mu' | 'μ')> identifier <'.'> expr
+    freeze  = <'['> identifier <']'> expr
+    parens  = <'('> expr <')'>
+    var     = identifier
+    identifier = #'[a-zA-Z_][a-zA-Z0-9_]*'
+   "
+   :auto-whitespace :standard))
 
-(defn make-expr
-  ([type arg1] (make-expr type arg1 nil))
-  ([type arg1 arg2]
-   (case type
-     :top      {:type type :expr arg1}
-     :var      {:type type :name arg1}
-     :lam      {:type type :param arg1 :body arg2}
-     :app      {:type type :fun arg1 :arg arg2}
-     :freeze   {:type type :alpha arg1 :expr arg2}
-     :mu       {:type type :alpha arg1 :expr arg2}
-     :let      {:type type :name arg1 :expr arg2})))
+(defn fold-app [head & tail]
+  (reduce (fn [f x] (->App f x)) head tail))
 
-(defn to-ast [tree]
-  (match tree
-    [:top e] (to-ast e)
-    [:let [:var name] expr] {:type :let :name name :expr (to-ast expr)}
-    [:expr e] (to-ast e)
-    [:term e] (to-ast e)
-    [:app t & ts] (reduce (fn [a b] (make-expr :app a b)) (to-ast t) (map to-ast ts))
-    [:lam [:var x] e] (make-expr :lam (make-expr :var x) (to-ast e))
-    [:mu [:var a] e] (make-expr :mu (make-expr :var a) (to-ast e))
-    [:freeze [:var a] e] (make-expr :freeze (make-expr :var a) (to-ast e))
-    [:var name] (make-expr :var name)
-    :else (throw (ex-info "Malformed parse tree" {:tree tree}))))
+(def transform
+  {:expr identity
+   :term identity
+   :identifier identity
+   :app (fn [& args] (apply fold-app args))
+   :lam (fn [param body] (->Lam param body))
+   :mu (fn [param body] (->Mu param body))
+   :freeze (fn [alpha body] (->Freeze alpha body))
+   :parens (fn [body] body)
+   :var ->Var})
 
-(defn parse [s]
-  (let [tree (parser s)]
+(defn parse [input]
+  (let [tree (parser input)]
     (if (insta/failure? tree)
-      (throw (ex-info "Parse error" {:failure tree}))
-      (to-ast tree))))
+      (throw (ex-info "Parse error" {:input input :error tree}))
+      (insta/transform transform tree))))
+

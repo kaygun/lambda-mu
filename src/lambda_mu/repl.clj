@@ -1,73 +1,66 @@
-(ns lambda-mu.repl
-  (:require [clojure.core.match :refer [match]]
-            [lambda-mu.parser :refer [parse]]
-            [lambda-mu.interpreter :refer [eval-expr]])
-  (:gen-class))
+(ns lambda_mu.repl
+  (:require [lambda_mu.parser :refer [parse]]
+            [lambda_mu.evaluator :as eval]
+            [lambda_mu.expr :refer [->Var ->Lam ->App ->Freeze ->Mu]])
+  (:import  [lambda_mu.expr Var Lam App Freeze Mu]))
 
-(defn pretty [expr]
-  (match expr
-    {:type :var, :name x} x
-    {:type :lam, :param x, :body b} (str "λ" (pretty x) "." (pretty b))
-    {:type :mu, :alpha a, :expr e} (str "μ" (pretty a) "." (pretty e))
-    {:type :app, :fun f, :arg a} (str "(" (pretty f) " " (pretty a) ")")
-    {:type :freeze, :alpha a, :expr e} (str "[" (pretty a) "] " (pretty e))))
-
-(defn dump-env [env path]
-  (with-open [w (clojure.java.io/writer path)]
-    (doseq [[name expr] env]
-      (.write w (str "let " name " = " (pretty expr) "\n")))))
-
-(defn load-env [path]
-  (with-open [r (clojure.java.io/reader path)]
-    (reduce
-     (fn [env line]
-       (if (clojure.string/blank? line)
-         env
-         (let [[new-env _] (eval-expr env (parse line))]
-           new-env)))
-     {} ;; start from empty env
-     (line-seq r))))
-
-(defn handle-command [env line]
+(defn pretty-print [expr]
   (cond
-    (clojure.string/starts-with? line ":q")
-    (do (println "Goodbye.") :quit)
+    (instance? Var expr) (:name expr)
+    (instance? Lam expr) (str "λ" (:param expr) "." (pretty-print (:body expr)))
+    (instance? Mu expr) (str "μ" (:alpha expr) "." (pretty-print (:expr expr)))
+    (instance? Freeze expr) (str "[" (:alpha expr) "]" (pretty-print (:expr expr)))
+    (instance? App expr) (str "(" (pretty-print (:fun expr)) " " (pretty-print (:arg expr)) ")")
+    :else (str expr)))
 
-    (clojure.string/starts-with? line ":load ")
-    (let [path (clojure.string/trim (subs line 6))]
-      (try
-        (let [e (load-env path)]
-          (println (str "Loaded from " path))
-          e)
-        (catch Exception e
-          (println "Load error:" (.getMessage e))
-          env)))
+(defn print-steps [exprs]
+  (doseq [[i e] (map-indexed vector exprs)]
+    (println (str "[" i "] " (pretty-print e)))))
 
-    (clojure.string/starts-with? line ":save ")
-    (let [path (clojure.string/trim (subs line 6))]
+(defn read-eval-print [line]
+  (cond
+    (and (.startsWith line "let ") (.contains line "="))
+    (let [[_ name rhs] (re-matches #"let (\w+)\s*=\s*(.*)" line)]
       (try
-        (do (dump-env env path)
-            (println (str "Saved to " path)))
+        (let [parsed (parse rhs)]
+          (swap! eval/env assoc name (eval/resolve-expr parsed))
+          (println (str "Defined " name ".")))
         (catch Exception e
-          (println "Save error:" (.getMessage e))))
-      env)
+          (println "Definition error:" (.getMessage e)))))
+
+    (.startsWith line "save \"")
+    (let [filename (second (re-matches #"save \"(.*)\"" line))]
+      (try
+        (spit filename
+              (apply str (map (fn [[k v]] (str "let " k " = " (pretty-print v) "\n")) @eval/env)))
+        (println (str "Environment saved to '" filename "'."))
+        (catch Exception e
+          (println "Could not save:" (.getMessage e)))))
+
+    (.startsWith line "load \"")
+    (let [filename (second (re-matches #"load \"(.*)\"" line))]
+      (try
+        (doseq [l (line-seq (java.io.BufferedReader. (java.io.FileReader. filename)))]
+          (println ">" l)
+          (read-eval-print l))
+        (catch Exception e
+          (println "Could not load:" (.getMessage e)))))
 
     :else
     (try
-      (let [[new-env nf] (eval-expr env (parse line))]
-        (when nf (println (pretty nf)))
-        new-env)
+      (let [parsed (parse line)
+            resolved (eval/resolve-expr parsed)]
+        (print-steps (eval/eval-steps resolved)))
       (catch Exception e
-        (println "Error:" (.getMessage e))
-        env))))
+        (println "Error:" (.getMessage e))))))
 
-(defn -main [& _]
+(defn -main []
   (println "λμ-Calculus REPL (Clojure). Type :q to quit.")
-  (loop [env {}]
+  (loop []
     (print "λμ> ") (flush)
-    (if-let [line (read-line)]
-      (let [res (handle-command env line)]
-        (if (= res :quit)
-          nil
-          (recur res)))
-      (println "Goodbye."))))
+    (let [line (read-line)]
+      (when (not= line ":q")
+        (read-eval-print line)
+        (recur))))
+  (println "Goodbye."))
+
