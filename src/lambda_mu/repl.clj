@@ -23,8 +23,8 @@
     (let [[_ name rhs] (re-matches #"let (\w+)\s*=\s*(.*)" line)]
       (try
         (let [parsed (parse rhs)]
-          (swap! eval/env assoc name (eval/resolve-expr parsed))
-          (println (str "Defined " name ".")))
+          (->> parsed eval/resolve-expr eval/eval-steps last (swap! eval/env assoc name))
+          (println (str "let " name " = " (pretty-print (@eval/env name)))))
         (catch Exception e
           (println "Definition error:" (.getMessage e)))))
 
@@ -40,7 +40,7 @@
     (.startsWith line "load \"")
     (let [filename (second (re-matches #"load \"(.*)\"" line))]
       (try
-        (doseq [l (line-seq (java.io.BufferedReader. (java.io.FileReader. filename)))]
+        (doseq [l (-> filename java.io.FileReader. java.io.BufferedReader. line-seq)]        
           (println ">" l)
           (read-eval-print l))
         (catch Exception e

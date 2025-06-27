@@ -7,10 +7,10 @@
   (insta/parser
    "expr    = term | app
     app     = term term+
-    term    = lam | mu | freeze | var | <'('> expr <')'>
+    term    =  <'('> expr <')'> | lam | mu | freeze | var 
+    freeze  = <'['> ident <']'> expr
     lam     = <('\\\\' | 'λ')> ident <'.'> expr
     mu      = <('mu' | 'μ')> ident <'.'> expr
-    freeze  = <'['> ident <']'> expr
     var     = ident
     ident   = #'[a-zA-Z_][a-zA-Z0-9_]*'
    "

@@ -30,56 +30,57 @@
   (let [candidates (map #(str base %) (cons "" (range)))]
     (first (remove used candidates))))
 
-(defn subst [binder replace expr & {:keys [preserve-free] :or {preserve-free false}}]
-  (letfn [(sub [expr used]
+(defn subst
+  [binder replace expr & {:keys [preserve-free on-freeze] :or {preserve-free false on-freeze identity}}]
+  (letfn [(walk [expr used]
             (cond
               (instance? Var expr)
               (if (= binder (:name expr)) replace expr)
 
               (instance? App expr)
-              (->App (sub (:fun expr) used) (sub (:arg expr) used))
-
-              (instance? Freeze expr)
-              (->Freeze (:alpha expr) (sub (:expr expr) used))
+              (->App (walk (:fun expr) used) (walk (:arg expr) used))
 
               (instance? Lam expr)
               (let [{:keys [param body]} expr
                     used-vars (clojure.set/union used (if preserve-free #{} (free-vars replace)) (free-vars body))
                     param' (if (= binder param) (fresh-name param used-vars) param)
                     body' (if (= param param') body (subst param (->Var param') body :preserve-free preserve-free))]
-                (->Lam param' (sub body' (conj used param'))))
+                (->Lam param' (walk body' (conj used param'))))
 
               (instance? Mu expr)
-              (let [{:keys [alpha expr]} expr
-                    used-vars (clojure.set/union used (if preserve-free #{} (free-vars replace)) (free-vars expr))
+              (let [{:keys [alpha expr] :as mu-expr} expr
+                    mu-body expr
+                    used-vars (clojure.set/union used (if preserve-free #{} (free-vars replace)) (free-vars mu-body))
                     alpha' (if (= binder alpha) (fresh-name alpha used-vars) alpha)
-                    expr' (if (= alpha alpha') expr (subst alpha (->Var alpha') expr :preserve-free true))]
-                (->Mu alpha' (sub expr' (conj used alpha'))))
+                    body' (if (= alpha alpha') mu-body
+                              (subst alpha (->Var alpha') mu-body :preserve-free true))]
+                (->Mu alpha' (walk body' (conj used alpha'))))
+              
+              ;; (instance? Mu expr)
+              ;; (let [{:keys [alpha expr]} expr
+              ;;       used-vars (clojure.set/union used (if preserve-free #{} (free-vars replace)) (free-vars expr))
+              ;;       alpha' (if (= binder alpha) (fresh-name alpha used-vars) alpha)
+              ;;       expr' (if (= alpha alpha') expr (subst alpha (->Var alpha') expr :preserve-free true))]
+              ;;   (->Mu alpha' (walk expr' (conj used alpha'))))
+
+              (instance? Freeze expr)
+              (on-freeze expr #(walk % used))
 
               :else expr))]
-    (sub expr (free-vars expr))))
+    (walk expr (free-vars expr))))
 
-;;(defn subst  [x e expr]
-;;  (subst x e expr :preserve-free false))
-;;(defn rename [x a expr]
-;;  (subst x (->Var a) expr :preserve-free true)) 
 
 (defn app-subst [beta v expr]
-  (letfn [(sub [expr used]
-            (cond
-              (instance? Freeze expr)
-              (let [{:keys [alpha expr]} expr]
-                (->Freeze alpha (if (= alpha beta) (->App (sub expr used) v) (sub expr used))))  
-              :else (subst beta #(= % beta) v expr)))]                          
-    (sub expr (free-vars expr))))
+  (subst beta v expr
+         :on-freeze
+         (fn [{:keys [alpha expr]} recur-fn]
+           (->Freeze alpha
+                     (if (= alpha beta)
+                       (->App (recur-fn expr) v)
+                       (recur-fn expr))))))
 
 (defn reduce-step [expr]
   (cond
-    ;; (λx.u) v => subst
-    (and (instance? App expr)
-         (instance? Lam (:fun expr)))
-    [(subst (:param (:fun expr)) (:arg expr) (:body (:fun expr)) :preserve-free false) true]
-
     ;; [a][a]e => [a]e
     (and (instance? Freeze expr)
          (let [inner (:expr expr)]
@@ -102,6 +103,11 @@
     (and (instance? App expr)
          (instance? Mu (:fun expr)))
     [(->Mu (:alpha (:fun expr)) (app-subst (:alpha (:fun expr)) (:arg expr) (:expr (:fun expr)))) true]
+    
+    ;; (λx.u) v => subst
+    (and (instance? App expr)
+         (instance? Lam (:fun expr)))
+    [(subst (:param (:fun expr)) (:arg expr) (:body (:fun expr)) :preserve-free false) true]
 
     (instance? Lam expr)
     (let [[b changed] (reduce-step (:body expr))] [(->Lam (:param expr) b) changed])
