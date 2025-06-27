@@ -5,31 +5,26 @@
 
 (def parser
   (insta/parser
-   "expr    = app
-    app     = term term*
-    term    = lam | mu | freeze | var | parens
-    lam     = <('\\\\' | 'λ')> identifier <'.'> expr
-    mu      = <('mu' | 'μ')> identifier <'.'> expr
-    freeze  = <'['> identifier <']'> expr
-    parens  = <'('> expr <')'>
-    var     = identifier
-    identifier = #'[a-zA-Z_][a-zA-Z0-9_]*'
+   "expr    = term | app
+    app     = term term+
+    term    = lam | mu | freeze | var | <'('> expr <')'>
+    lam     = <('\\\\' | 'λ')> ident <'.'> expr
+    mu      = <('mu' | 'μ')> ident <'.'> expr
+    freeze  = <'['> ident <']'> expr
+    var     = ident
+    ident   = #'[a-zA-Z_][a-zA-Z0-9_]*'
    "
    :auto-whitespace :standard))
 
-(defn fold-app [head & tail]
-  (reduce (fn [f x] (->App f x)) head tail))
-
 (def transform
-  {:expr identity
-   :term identity
-   :identifier identity
-   :app (fn [& args] (apply fold-app args))
-   :lam (fn [param body] (->Lam param body))
-   :mu (fn [param body] (->Mu param body))
+  {:expr   identity
+   :term   identity
+   :ident  identity
+   :app    (fn [head & tail] (reduce (fn [f x] (->App f x)) head tail))
+   :lam    (fn [param body] (->Lam param body))
+   :mu     (fn [param body] (->Mu param body))
    :freeze (fn [alpha body] (->Freeze alpha body))
-   :parens (fn [body] body)
-   :var ->Var})
+   :var    ->Var})
 
 (defn parse [input]
   (let [tree (parser input)]
