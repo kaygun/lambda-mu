@@ -1,34 +1,31 @@
 (ns lambda_mu.parser
   (:require [instaparse.core :as insta]
-            [lambda_mu.expr :refer [->Var ->Lam ->App ->Freeze ->Mu]]
+            [lambda_mu.types :refer [->Var ->Lam ->Appl ->Cont ->Mu]]
             [clojure.test :refer :all]))
 
+;; === Lambda-Mu Parser using Instaparse ===
 (def parser
-  (insta/parser
-   "expr    = term | app
-    app     = term term+
-    term    =  <'('> expr <')'> | lam | mu | freeze | var 
-    freeze  = <'['> ident <']'> expr
-    lam     = <('\\\\' | 'λ')> ident <'.'> expr
-    mu      = <('mu' | 'μ')> ident <'.'> expr
-    var     = ident
-    ident   = #'[a-zA-Z_][a-zA-Z0-9_]*'
-   "
-   :auto-whitespace :standard))
+  (insta/parser 
+    "expr = atom (atom)*
+     atom = lam | mu | cont | var | <'('> expr <')'>
+     lam = <('\\\\' | 'λ')> var <'.'> expr
+     mu = <('#' | 'μ')> var <'.'> expr
+     cont = <'['> var <']'> atom
+     var = #'[a-zA-Z_][a-zA-Z0-9_]*'"
+    :auto-whitespace :standard))
 
-(def transform
-  {:expr   identity
-   :term   identity
-   :ident  identity
-   :app    (fn [head & tail] (reduce (fn [f x] (->App f x)) head tail))
-   :lam    (fn [param body] (->Lam param body))
-   :mu     (fn [param body] (->Mu param body))
-   :freeze (fn [alpha body] (->Freeze alpha body))
-   :var    ->Var})
+(defn to-ast [tree]
+  (insta/transform
+   {:var  ->Var
+    :lam  ->Lam
+    :mu   ->Mu
+    :cont ->Cont
+    :atom identity
+    :expr #(reduce ->Appl %1 %&)}
+   tree))
 
-(defn parse [input]
-  (let [tree (parser input)]
-    (if (insta/failure? tree)
-      (throw (ex-info "Parse error" {:input input :error tree}))
-      (insta/transform transform tree))))
-
+(defn parse-expr [s]
+  (let [result (parser s)]
+    (if (insta/failure? result)
+      (throw (ex-info "Parse error" {:error (str result)}))
+      (to-ast result))))

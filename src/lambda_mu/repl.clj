@@ -1,66 +1,141 @@
 (ns lambda_mu.repl
-  (:require [lambda_mu.parser :refer [parse]]
-            [lambda_mu.evaluator :as eval]
-            [lambda_mu.expr :refer [->Var ->Lam ->App ->Freeze ->Mu]])
-  (:import  [lambda_mu.expr Var Lam App Freeze Mu]))
+  (:require [clojure.string :as str]
+            [clojure.set :as set]
+            [clojure.java.io :as io]
+            [instaparse.core :as insta]
+            [lambda_mu.parser :refer [parse-expr]]
+            [lambda_mu.evaluator :refer [eval-expr]]
+            [lambda_mu.types :refer [->Var ->Lam ->Appl ->Cont ->Mu]])
+  (:import  [lambda_mu.types Var Lam Appl Cont Mu]))
+
+;; === REPL ===
+(defn resolve-expr [expr env]
+  (condp instance? expr
+    Var  (if (some #(= (:name %) (:name expr)) env)
+           expr
+           (get env (:name expr) expr))
+    
+    Appl (->Appl (resolve-expr (:head expr) env)
+                 (resolve-expr (:arg expr) env))
+
+    Cont (->Cont (resolve-expr (:head expr) env)
+                 (resolve-expr (:arg expr) env))
+
+    Lam  (->Lam (:param expr)
+                (resolve-expr (:body expr) (conj env (:param expr))))
+
+    Mu   (->Mu (:param expr)
+               (resolve-expr (:body expr) (conj env (:param expr))))
+
+    :else expr))
 
 (defn pretty-print [expr]
-  (cond
-    (instance? Var expr) (:name expr)
-    (instance? Lam expr) (str "λ" (:param expr) "." (pretty-print (:body expr)))
-    (instance? Mu expr) (str "μ" (:alpha expr) "." (pretty-print (:expr expr)))
-    (instance? Freeze expr) (str "[" (:alpha expr) "]" (pretty-print (:expr expr)))
-    (instance? App expr) (str "(" (pretty-print (:fun expr)) " " (pretty-print (:arg expr)) ")")
+  (condp instance? expr
+    Var  (:name expr)
+
+    Lam  (str "λ" (:name (:param expr)) "." (pretty-print (:body expr)))
+
+    Mu   (str "μ" (:name (:param expr)) "." (pretty-print (:body expr)))
+    
+    Cont (str "[" (pretty-print (:head expr)) "] " (pretty-print (:arg expr)))
+
+    Appl (str (pretty-print (:head expr))
+              (if (instance? Var (:arg expr))
+                " "
+                " (")
+              (pretty-print (:arg expr))
+              (if (instance? Var (:arg expr)) "" ")"))
+
     :else (str expr)))
 
-(defn print-steps [exprs]
-  (doseq [[i e] (map-indexed vector exprs)]
-    (println (str "[" i "] " (pretty-print e)))))
+(declare handle-line handle-expr handle-let)
 
-(defn read-eval-print [line]
-  (cond
-    (and (.startsWith line "let ") (.contains line "="))
-    (let [[_ name rhs] (re-matches #"let (\w+)\s*=\s*(.*)" line)]
-      (try
-        (let [parsed (parse rhs)]
-          (->> parsed eval/resolve-expr eval/eval-steps last (swap! eval/env assoc name))
-          (println (str "let " name " = " (pretty-print (@eval/env name)))))
-        (catch Exception e
-          (println "Definition error:" (.getMessage e)))))
+;; REPL
+(defn show-help []
+  (println "Commands:")
+  (println "  let <n> = <expr>    - Define a variable")
+  (println "  :load \"<file>\"     - Load definitions from file")
+  (println "  :save \"<file>\"     - Save environment to file")
+  (println "  :env               - Show current environment")
+  (println "  :help              - Show this help")
+  (println "  :q                 - Quit")
+  (println "  <expr>             - Evaluate expression"))
 
-    (.startsWith line "save \"")
-    (let [filename (second (re-matches #"save \"(.*)\"" line))]
-      (try
-        (spit filename
-              (apply str (map (fn [[k v]] (str "let " k " = " (pretty-print v) "\n")) @eval/env)))
-        (println (str "Environment saved to '" filename "'."))
-        (catch Exception e
-          (println "Could not save:" (.getMessage e)))))
+(defn show-env [env]
+  (if (empty? env)
+    (println "Empty environment")
+    (doseq [[name expr] env]
+      (println (str name " = " (pretty-print expr))))))
 
-    (.startsWith line "load \"")
-    (let [filename (second (re-matches #"load \"(.*)\"" line))]
-      (try
-        (doseq [l (-> filename java.io.FileReader. java.io.BufferedReader. line-seq)]        
-          (println ">" l)
-          (read-eval-print l))
-        (catch Exception e
-          (println "Could not load:" (.getMessage e)))))
+(defn handle-let [line env]
+  (let [parts (str/split (subs line 4) #"=" 2)]
+    (if (= 2 (count parts))
+      (let [[name expr-str] (map str/trim parts)]
+        (try
+          (let [expr (parse-expr expr-str)
+                resolved (resolve-expr expr env)]
+            (println (str "let " name " = " (pretty-print resolved)))
+            (assoc env name resolved))
+          (catch Exception e
+            (println "Error:" (.getMessage e))
+            env)))
+      (do (println "Error: malformed let statement. Use: let <n> = <expr>")
+          env))))
 
-    :else
-    (try
-      (let [parsed (parse line)
-            resolved (eval/resolve-expr parsed)]
-        (print-steps (eval/eval-steps resolved)))
-      (catch Exception e
-        (println "Error:" (.getMessage e))))))
+(defn handle-load [filename env]
+  (try
+    (with-open [reader (io/reader filename)]
+      (reduce (fn [env line]
+                (let [trimmed-line (str/trim line)]
+                  (if (seq trimmed-line)  ; Check if non-empty after trimming
+                    (do (println ">" trimmed-line)
+                        (handle-line trimmed-line env))
+                    env)))
+              env
+              (line-seq reader)))
+    (catch Exception e
+      (println "Error loading" filename ":" (.getMessage e))
+      env)))
+
+(defn handle-save [filename env]
+  (try
+    (with-open [writer (io/writer filename)]
+      (doseq [[name expr] env]
+        (.write writer (str "let " name " = " (pretty-print expr) "\n")))
+      (println "Environment saved to" filename))
+    (catch Exception e
+      (println "Error saving to" filename ":" (.getMessage e))))
+  env)
+
+(defn handle-expression [line env]
+  (try
+    (-> line parse-expr (resolve-expr env) eval-expr pretty-print println)
+    (catch Exception e
+      (println "Error:" (.getMessage e))))
+  env)
+
+(defn handle-line [line env]
+  (let [line (str/trim line)]
+    (cond
+      (empty? line) env
+      (= ":help" line) (do (show-help) env)
+      (= ":env" line) (do (show-env env) env)
+      (and (str/starts-with? line ":load \"") (str/ends-with? line "\""))
+      (handle-load (subs line 7 (dec (count line))) env)
+      (and (str/starts-with? line ":save \"") (str/ends-with? line "\""))
+      (handle-save (subs line 7 (dec (count line))) env)
+      (and (str/starts-with? line "let ") (str/includes? line "="))
+      (handle-let line env)
+      :else (handle-expression line env))))
 
 (defn -main []
-  (println "λμ-Calculus REPL (Clojure). Type :q to quit.")
-  (loop []
-    (print "λμ> ") (flush)
-    (let [line (read-line)]
-      (when (not= line ":q")
-        (read-eval-print line)
-        (recur))))
-  (println "Goodbye."))
-
+  (println "λμ-Calculus REPL (Clojure). Type :q to quit, :help for commands.")
+  (loop [env {}]
+    (print "λμ> ")
+    (flush)
+    (let [input (read-line)]
+      (cond
+        (or (nil? input) (= ":q" input))
+        (println "Goodbye!")
+        :else
+        (recur (handle-line input env))))))

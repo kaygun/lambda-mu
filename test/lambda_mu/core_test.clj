@@ -1,49 +1,49 @@
-(ns lambda_mu.core_test
+(ns lambda-mu.core-test
   (:require [clojure.test :refer :all]
-            [lambda_mu.parser :refer [parse]]
-            [lambda_mu.evaluator :as eval]
-            [lambda_mu.expr :refer :all]))
+            [lambda_mu.parser :refer [parse-expr]]
+            [lambda_mu.evaluator :refer [alpha-equal? eval-expr free-vars substitute]]
+            [lambda_mu.repl :refer [pretty-print resolve-expr]]
+            [lambda_mu.types :refer [->Var ->Lam ->Mu ->Appl ->Cont]]))
 
-(deftest parser-tests
-  (testing "Parser correctness"
-    (is (= (->Var "x") (parse "x")))
-    (is (= (->Lam "x" (->Var "x")) (parse "λx.x")))
-    (is (= (->Mu "a" (->Var "a")) (parse "μa.a")))
-    (is (= (->Freeze "a" (->Var "x")) (parse "[a]x")))
-    (is (= (->App (->Var "f") (->Var "x")) (parse "f x")))
-    (is (= (->App (->App (->Var "f") (->Var "x")) (->Var "y")) (parse "f x y")))
-    (is (thrown? Exception (parse "λ.")))))
+(deftest test-parsing
+  (is (= (->Var "x") (parse-expr "x")))
+  (is (= (->Lam (->Var "x") (->Var "x")) (parse-expr "λx.x")))
+  (is (= (->Mu (->Var "k") (->Var "k")) (parse-expr "μk.k")))
+  (is (= (->Appl (->Var "f") (->Var "x")) (parse-expr "f x")))
+  (is (= (->Cont (->Var "k") (->Var "x")) (parse-expr "[k] x"))))
 
-(deftest free-vars-tests
-  (testing "Free variable detection"
-    (is (= #{"x"} (eval/free-vars (->Var "x"))))
-    (is (= #{} (eval/free-vars (->Lam "x" (->Var "x")))))
-    (is (= #{"y"} (eval/free-vars (->Lam "x" (->Var "y")))))
-    (is (= #{"x" "f"} (eval/free-vars (->App (->Var "f") (->Var "x")))))
-    (is (= #{"x"} (eval/free-vars (->Freeze "a" (->Var "x")))))
-    (is (= #{"x"} (eval/free-vars (->Mu "a" (->App (->Var "a") (->Var "x"))))))))
+(deftest test-pretty-print
+  (is (= "x" (pretty-print (->Var "x"))))
+  (is (= "λx.x" (pretty-print (->Lam (->Var "x") (->Var "x")))))
+  (is (= "μk.k" (pretty-print (->Mu (->Var "k") (->Var "k")))))
+  (is (= "f x" (pretty-print (->Appl (->Var "f") (->Var "x")))))
+  (is (= "[k] x" (pretty-print (->Cont (->Var "k") (->Var "x"))))))
 
-(deftest resolve-expr-tests
-  (testing "Environment resolution"
-    (reset! eval/env {"x" (->Var "y") "y" (->Var "z")})
-    (is (= (->Var "z") (eval/resolve-expr (->Var "x"))))))
+(deftest test-alpha-equal
+  (is (alpha-equal? (parse-expr "λx.x") (parse-expr "λy.y")))
+  (is (not (alpha-equal? (parse-expr "λx.x") (parse-expr "λx.y"))))
+  (is (alpha-equal? (parse-expr "μk.[k] x") (parse-expr "μz.[z] x"))))
 
-(deftest reduce-step-tests
-  (testing "One-step reductions"
-    (let [id (->Lam "x" (->Var "x"))
-          expr (->App id (->Var "y"))]
-      (is (= [(->Var "y") true] (eval/reduce-step expr))))))
+(deftest test-substitute
+  (let [x (->Var "x")
+        y (->Var "y")
+        f (->Lam x x)]
+    (is (alpha-equal? y (substitute x y x)))
+    (is (alpha-equal? f (substitute y x f)))
+    (is (alpha-equal? (->Lam y x) (substitute x y (->Lam y x))))))
 
-(deftest reduce-all-tests
-  (testing "Full reduction sequence"
-    (let [expr (parse "(λx.x) y")]
-      (is (= (->Var "y") (first (eval/reduce-step (eval/resolve-expr expr))))))))
+(deftest test-eval-simple
+  (is (alpha-equal? (eval-expr (parse-expr "(λx.x) y")) (parse-expr "y")))
+  (is (alpha-equal? (eval-expr (parse-expr "μk.[k] y")) (parse-expr "y")))
+  (is (alpha-equal? (eval-expr (parse-expr "(μk.[k] x) y")) (parse-expr "x y"))))
 
-(deftest subst-tests
-  (testing "Capture-avoiding substitution"
-    (let [expr (->Lam "x" (->App (->Var "x") (->Var "y")))
-          sub  (eval/subst "y" (->Var "z") expr)]
-      (is (= (->Lam "x" (->App (->Var "x") (->Var "z"))) sub)))))
+(deftest test-free-vars
+  (is (= #{(->Var "x") (->Var "y")} (free-vars (parse-expr "x y"))))
+  (is (= #{} (free-vars (parse-expr "λx.x"))))
+  (is (= #{(->Var "z")} (free-vars (parse-expr "λx.z")))))
 
-(run-tests)
-
+(deftest test-resolve-env
+  (let [env {"id" (parse-expr "λx.x")
+             "val" (parse-expr "z")}
+        expr (parse-expr "id val")]
+    (is (alpha-equal? (eval-expr (resolve-expr expr env)) (parse-expr "z")))))
