@@ -15,15 +15,6 @@
 (defn free-vars [expr]
   (condp instance? expr
     Var #{expr}
-    Appl (set/union (free-vars (:head expr)) (free-vars (:arg expr)))
-    Cont (set/union (free-vars (:head expr)) (free-vars (:arg expr)))  ; ← This looks wrong!
-    Lam  (disj (free-vars (:body expr)) (:param expr))
-    Mu   (disj (free-vars (:body expr)) (:param expr))
-    #{}))
-
-(defn free-vars [expr]
-  (condp instance? expr
-    Var #{expr}
     Lam  (disj (free-vars (:body expr)) (:param expr))
     Mu   (disj (free-vars (:body expr)) (:param expr))
     Appl (set/union (free-vars (:head expr)) (free-vars (:arg expr)))
